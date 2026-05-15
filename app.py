@@ -407,8 +407,15 @@ class KlingGenericClient:
 
     def submit(self, payload: Dict) -> Dict:
         r = self.session.post(self.create_url, json=payload, timeout=180)
-        r.raise_for_status()
-        return r.json()
+        if not r.ok:
+            raise RuntimeError(
+                f"HTTP {r.status_code} Error from Kling create endpoint. "
+                f"Response body: {r.text[:2000]}"
+            )
+        try:
+            return r.json()
+        except Exception:
+            raise RuntimeError(f"Kling create endpoint returned non-JSON response: {r.text[:1000]}")
 
     def poll_until_done(self, task_id: str, status_path: str, result_url_path: str,
                         poll_seconds: int = 10, max_polls: int = 60) -> Tuple[str, Optional[str], Dict]:
@@ -418,8 +425,15 @@ class KlingGenericClient:
         for _ in range(max_polls):
             url = self.status_url_template.replace("{{TASK_ID}}", str(task_id))
             r = self.session.get(url, timeout=120)
-            r.raise_for_status()
-            final_json = r.json()
+            if not r.ok:
+                raise RuntimeError(
+                    f"HTTP {r.status_code} Error from Kling status endpoint. "
+                    f"Response body: {r.text[:2000]}"
+                )
+            try:
+                final_json = r.json()
+            except Exception:
+                raise RuntimeError(f"Kling status endpoint returned non-JSON response: {r.text[:1000]}")
             status = str(get_nested(final_json, status_path, "") or "").lower()
             result_url = get_nested(final_json, result_url_path)
             if status in {"completed", "succeed", "success", "done", "finished"}:
@@ -431,22 +445,28 @@ class KlingGenericClient:
 
 
 DEFAULT_KLING_PAYLOAD = json.dumps({
-    "model": "{{MODEL}}",
-    "mode": "start_end_frame",
-    "prompt": "{{PROMPT}}",
-    "negative_prompt": "{{NEGATIVE_PROMPT}}",
+    "model_name": "{{MODEL}}",
+    "mode": "pro",
     "duration": "{{DURATION}}",
-    "aspect_ratio": "{{ASPECT_RATIO}}",
-    "input": {
-        "start_image_base64": "{{START_IMAGE_BASE64}}",
-        "end_image_base64": "{{END_IMAGE_BASE64}}"
-    }
+    "image": "{{START_IMAGE_BASE64}}",
+    "image_tail": "{{END_IMAGE_BASE64}}",
+    "prompt": "{{PROMPT}}"
+}, ensure_ascii=False, indent=2)
+
+# Alternative template for providers that use "model" instead of "model_name".
+ALT_KLING_PAYLOAD_MODEL_FIELD = json.dumps({
+    "model": "{{MODEL}}",
+    "mode": "pro",
+    "duration": "{{DURATION}}",
+    "image": "{{START_IMAGE_BASE64}}",
+    "image_tail": "{{END_IMAGE_BASE64}}",
+    "prompt": "{{PROMPT}}"
 }, ensure_ascii=False, indent=2)
 
 
 st.set_page_config(page_title="SocksLover Kling Prompt Assistant v5.0 Lite", layout="wide")
-st.title("SocksLover Kling Prompt Assistant v5.1 – Kling JWT")
-st.caption("Kling Access Key / Secret Key 기반 JWT 인증을 지원하는 단일 파일 버전입니다.")
+st.title("SocksLover Kling Prompt Assistant v5.2 – Kling Payload Fix")
+st.caption("Kling JWT 인증 + image/image_tail 기본 payload를 적용한 단일 파일 버전입니다.")
 
 for key, value in {
     "extracted": None,
@@ -669,13 +689,36 @@ if prompt_bundle and extracted and selected_pair:
     st.subheader("7) One Click Kling Execution")
     k1, k2, k3 = st.columns(3)
     with k1:
-        kling_model = st.text_input("Kling Model", value="Kling-V3")
+        kling_model = st.text_input("Kling Model", value="kling-v3-0")
     with k2:
         kling_duration = st.selectbox("Duration", ["5", "10", "15"], index=0)
     with k3:
         aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "4:5", "9:16", "16:9"], index=0)
 
     payload_template = st.text_area("Kling Request JSON Template", value=DEFAULT_KLING_PAYLOAD, height=220)
+    with st.expander("Kling payload template help"):
+        st.markdown("""
+**권장 기본값**
+
+Start/End frame 방식은 일반적으로 `image`와 `image_tail`을 사용합니다.  
+이전 버전의 `mode: start_end_frame`, `input.start_image_base64`, `input.end_image_base64` 구조는 400 Bad Request가 날 가능성이 높습니다.
+
+기본 템플릿:
+
+```json
+{
+  "model_name": "{{MODEL}}",
+  "mode": "pro",
+  "duration": "{{DURATION}}",
+  "image": "{{START_IMAGE_BASE64}}",
+  "image_tail": "{{END_IMAGE_BASE64}}",
+  "prompt": "{{PROMPT}}"
+}
+```
+
+응답 body에 `unknown field model_name` 같은 메시지가 나오면 `model_name`을 `model`로 바꿔보세요.
+""")
+        st.code(ALT_KLING_PAYLOAD_MODEL_FIELD, language="json")
 
     candidate_map = {img["id"]: img for img in (st.session_state["analysis_candidates"] or [])}
     start_img = candidate_map.get(selected_pair["start_image_id"])
