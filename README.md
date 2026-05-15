@@ -1,20 +1,30 @@
-# SocksLover Kling Prompt Assistant v5.0 Lite – Single File
+# SocksLover Kling Prompt Assistant v5.1 – Kling JWT
 
-This is a single-file version of the integrated MVP.
-
-It avoids `ModuleNotFoundError: utils...` issues on Streamlit Cloud when the `utils/` folder is not uploaded correctly.
-
-## Features
+This is a **single-file Streamlit app** for:
 
 - Shopify product image extraction
-- Manual analysis start index
 - GPT Vision image analysis
 - Lifestyle First pair recommendation
 - Scene Card / Kling prompt generation
-- One Click Kling API execution
-- Status polling
+- One Click Kling execution
 - Take Log
-- Regeneration prompt helper
+
+## v5.1 update
+
+Kling API authentication now supports:
+
+```text
+Kling Access Key
+Kling Secret Key
+```
+
+The app automatically generates a JWT token and sends:
+
+```text
+Authorization: Bearer <generated_jwt>
+```
+
+`PyJWT` is included in `requirements.txt`.
 
 ## Run
 
@@ -23,16 +33,39 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## GitHub upload
+## GitHub / Streamlit Cloud upload
 
-Upload these files/folders after unzipping:
+Upload the contents of this folder:
 
-- `app.py`
-- `requirements.txt`
-- `.env.example`
-- `.gitignore`
-- `README.md`
-- `logs/`
-- `outputs/`
+```text
+app.py
+requirements.txt
+.env.example
+.gitignore
+README.md
+logs/
+outputs/
+```
 
-No `utils/` folder is required in this version.
+No `utils/` folder is required.
+
+## Security
+
+Do not commit Access Key or Secret Key to GitHub.
+Enter them in the Streamlit UI sidebar, or use Streamlit Secrets / environment variables.
+
+## Environment variables
+
+Optional:
+
+```text
+OPENAI_API_KEY
+OPENAI_MODEL
+KLING_ACCESS_KEY
+KLING_SECRET_KEY
+KLING_CREATE_URL
+KLING_STATUS_URL_TEMPLATE
+KLING_TASK_ID_PATH
+KLING_STATUS_PATH
+KLING_RESULT_URL_PATH
+```

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+import jwt
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -184,6 +185,26 @@ def encode_image_to_base64(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("utf-8")
 
 
+def generate_kling_jwt(access_key: str, secret_key: str, ttl_seconds: int = 1800) -> str:
+    """Generate Kling API JWT from Access Key and Secret Key.
+
+    Kling official API authentication commonly uses:
+    payload = {"iss": access_key, "exp": now + ttl, "nbf": now - 5}
+    signed with HS256 using secret_key.
+    """
+    now = int(time.time())
+    headers = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "iss": access_key,
+        "exp": now + int(ttl_seconds),
+        "nbf": now - 5,
+    }
+    token = jwt.encode(payload, secret_key, algorithm="HS256", headers=headers)
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return token
+
+
 def save_video_from_url(url: str, output_dir: str, filename_hint: str, session=None) -> Optional[str]:
     try:
         sess = session or requests.Session()
@@ -333,26 +354,45 @@ Requirements:
 
 
 class KlingGenericClient:
-    def __init__(self, api_key: str, create_url: str, status_url_template: str,
-                 auth_mode: str = "bearer", custom_header_name: str = "Authorization",
-                 extra_headers_json: str = "{}"):
+    def __init__(
+        self,
+        create_url: str,
+        status_url_template: str,
+        auth_mode: str = "kling_jwt",
+        access_key: str = "",
+        secret_key: str = "",
+        api_key: str = "",
+        custom_header_name: str = "Authorization",
+        extra_headers_json: str = "{}",
+        jwt_ttl_seconds: int = 1800,
+    ):
+        self.access_key = (access_key or "").strip()
+        self.secret_key = (secret_key or "").strip()
         self.api_key = (api_key or "").strip()
         self.create_url = (create_url or "").strip()
         self.status_url_template = (status_url_template or "").strip()
         self.auth_mode = auth_mode
         self.custom_header_name = custom_header_name or "Authorization"
+        self.jwt_ttl_seconds = int(jwt_ttl_seconds)
         self.session = requests.Session()
         self.session.headers.update(self._headers(extra_headers_json))
 
     def _headers(self, extra_headers_json: str) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
+
+        if self.auth_mode == "kling_jwt":
+            if not self.access_key or not self.secret_key:
+                raise ValueError("Kling JWT 인증에는 Access Key와 Secret Key가 모두 필요합니다.")
+            token = generate_kling_jwt(self.access_key, self.secret_key, self.jwt_ttl_seconds)
+            headers["Authorization"] = f"Bearer {token}"
+        elif self.api_key:
             if self.auth_mode == "bearer":
                 headers["Authorization"] = f"Bearer {self.api_key}"
             elif self.auth_mode == "x-api-key":
                 headers["x-api-key"] = self.api_key
             elif self.auth_mode == "custom":
                 headers[self.custom_header_name] = self.api_key
+
         try:
             extra = json.loads(extra_headers_json or "{}")
             if isinstance(extra, dict):
@@ -405,8 +445,8 @@ DEFAULT_KLING_PAYLOAD = json.dumps({
 
 
 st.set_page_config(page_title="SocksLover Kling Prompt Assistant v5.0 Lite", layout="wide")
-st.title("SocksLover Kling Prompt Assistant v5.0 Lite – One Click Kling Execution")
-st.caption("단일 파일 버전: GitHub 업로드 누락으로 인한 ModuleNotFoundError를 방지합니다.")
+st.title("SocksLover Kling Prompt Assistant v5.1 – Kling JWT")
+st.caption("Kling Access Key / Secret Key 기반 JWT 인증을 지원하는 단일 파일 버전입니다.")
 
 for key, value in {
     "extracted": None,
@@ -425,10 +465,22 @@ with st.sidebar:
     openai_model = st.text_input("OpenAI Model", value=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
 
     st.header("Kling API Settings")
-    kling_api_key = st.text_input("Kling API Key", value=os.getenv("KLING_API_KEY", ""), type="password")
+    auth_mode = st.selectbox("Auth Mode", ["kling_jwt", "bearer", "x-api-key", "custom"], index=0)
+
+    kling_access_key = ""
+    kling_secret_key = ""
+    kling_api_key = ""
+
+    if auth_mode == "kling_jwt":
+        kling_access_key = st.text_input("Kling Access Key", value=os.getenv("KLING_ACCESS_KEY", ""), type="password")
+        kling_secret_key = st.text_input("Kling Secret Key", value=os.getenv("KLING_SECRET_KEY", ""), type="password")
+        jwt_ttl_seconds = st.number_input("JWT TTL seconds", min_value=300, max_value=7200, value=1800, step=300)
+    else:
+        kling_api_key = st.text_input("Kling API Key", value=os.getenv("KLING_API_KEY", ""), type="password")
+        jwt_ttl_seconds = 1800
+
     create_url = st.text_input("Create Endpoint URL", value=os.getenv("KLING_CREATE_URL", ""))
     status_url_template = st.text_input("Status Endpoint URL Template", value=os.getenv("KLING_STATUS_URL_TEMPLATE", ""))
-    auth_mode = st.selectbox("Auth Mode", ["bearer", "x-api-key", "custom"])
     custom_header_name = st.text_input("Custom Header Name", value="Authorization")
     extra_headers_json = st.text_area("Extra Headers JSON", value="{}", height=80)
 
@@ -639,17 +691,26 @@ if prompt_bundle and extracted and selected_pair:
                 st.image(end_img["bytes"], caption=f"End: {end_img['id']}", use_container_width=True)
 
         if st.button("Generate in Kling", type="primary", use_container_width=True):
-            if not kling_api_key or not create_url or not status_url_template:
-                st.error("Kling API Key / Create Endpoint URL / Status Endpoint URL Template를 입력해주세요.")
+            missing_auth = False
+            if auth_mode == "kling_jwt":
+                missing_auth = (not kling_access_key or not kling_secret_key)
+            else:
+                missing_auth = (not kling_api_key)
+
+            if missing_auth or not create_url or not status_url_template:
+                st.error("Kling 인증 정보 / Create Endpoint URL / Status Endpoint URL Template를 입력해주세요.")
             else:
                 try:
                     client = KlingGenericClient(
-                        api_key=kling_api_key,
                         create_url=create_url,
                         status_url_template=status_url_template,
                         auth_mode=auth_mode,
+                        access_key=kling_access_key,
+                        secret_key=kling_secret_key,
+                        api_key=kling_api_key,
                         custom_header_name=custom_header_name,
                         extra_headers_json=extra_headers_json,
+                        jwt_ttl_seconds=int(jwt_ttl_seconds),
                     )
                     values = {
                         "MODEL": kling_model,
